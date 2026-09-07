@@ -30,11 +30,6 @@ npm run build
 `npm run build` builds the primary extension artifact in
 `../../outputs/youtube-local-downloader-extension`.
 
-Every push to `main` also runs the GitHub Actions release workflow. It checks
-and tests the project, packages the extension, and publishes a uniquely tagged
-prerelease containing the extension ZIP and its SHA-256 checksum. The
-experimental Tampermonkey build is tested but is not included in releases.
-
 ## installing
 
 1. download the built extension zip from releases and extract to a directory of your choice
