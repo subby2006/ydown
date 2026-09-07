@@ -1,0 +1,22 @@
+{
+  "name": "ydown",
+  "version": "0.5.1",
+  "private": true,
+  "type": "module",
+  "description": "A browser-only YouTube downloader extension using SABR streaming and MediaBunny muxing.",
+  "scripts": {
+    "build": "node scripts/build-extension.mjs",
+    "build:extension": "node scripts/build-extension.mjs",
+    "build:userscript": "node scripts/build.mjs --experimental-userscript",
+    "check": "tsc --noEmit",
+    "test": "npm run build:extension && npm run build:userscript && node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "googlevideo": "4.1.1",
+    "mediabunny": "1.55.7"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2",
+    "typescript": "5.9.3"
+  }
+}

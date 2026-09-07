@@ -1,0 +1,47 @@
+# Dependencies
+node_modules/
+
+# Generated builds and packages
+dist/
+build/
+coverage/
+youtube-local-downloader-extension/
+*.zip
+*.crx
+
+# TypeScript and test caches
+*.tsbuildinfo
+.nyc_output/
+.cache/
+.eslintcache
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+*.local
+
+# Logs and temporary files
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+tmp/
+temp/
+*.tmp
+
+# Editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Operating-system metadata
+.DS_Store
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
