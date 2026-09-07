@@ -1,4 +1,5 @@
 import { SabrStream } from 'googlevideo/sabr-stream';
+import { VideoPlaybackAbrRequest } from 'googlevideo/protos';
 import { EnabledTrackTypes } from 'googlevideo/utils';
 import {
   BlobSource,
@@ -24,6 +25,60 @@ interface TemporaryTracks {
   audioName: string;
   videoFile: File;
   audioFile: File;
+}
+
+interface SabrResponseSummary {
+  requestId: number;
+  status: number;
+  statusText: string;
+  contentType: string;
+  elapsedMs: number;
+  protectionStatus: number;
+  sabrErrorType?: string;
+  sabrErrorCode?: string;
+}
+
+type ErrorWithSabrResponse = Error & { sabrResponse?: SabrResponseSummary };
+
+const SABR_PLAYBACK_RATE = 2;
+let sabrPlaybackRateLogged = false;
+
+function withSabrPlaybackRate(init?: RequestInit): RequestInit | undefined {
+  if (!(init?.body instanceof Uint8Array)) return init;
+
+  try {
+    const request = VideoPlaybackAbrRequest.decode(init.body);
+    if (!request.clientAbrState) return init;
+    request.clientAbrState.playbackRate = SABR_PLAYBACK_RATE;
+    if (!sabrPlaybackRateLogged) {
+      console.debug(`[YT Local Downloader] SABR pacing: reporting ${SABR_PLAYBACK_RATE}x playback`);
+      sabrPlaybackRateLogged = true;
+    }
+    return {
+      ...init,
+      body: VideoPlaybackAbrRequest.encode(request).finish() as unknown as BodyInit,
+    };
+  } catch (error) {
+    console.warn('[YT Local Downloader] Could not apply SABR playback-rate boost; using the original request.', error);
+    return init;
+  }
+}
+
+function attachSabrResponse(
+  error: unknown,
+  response: Omit<SabrResponseSummary, 'protectionStatus'> | null,
+  protectionStatus: number,
+): unknown {
+  if (!response) return error;
+  const target: ErrorWithSabrResponse = error instanceof Error ? error : new Error(String(error));
+  const summary: SabrResponseSummary = { ...response, protectionStatus };
+  const sabrError = /SABR Error:\s*(.+?)\s*-\s*(.+)$/i.exec(target.message);
+  if (sabrError) {
+    summary.sabrErrorType = sabrError[1].trim().slice(0, 120);
+    summary.sabrErrorCode = sabrError[2].trim().slice(0, 120);
+  }
+  target.sabrResponse = summary;
+  return target;
 }
 
 export function safeFilename(value: string): string {
@@ -60,15 +115,24 @@ async function downloadAudioOnly(
   onProgress: (update: ProgressUpdate) => void,
 ): Promise<void> {
   let requestCount = 0;
+  let lastSabrResponse: Omit<SabrResponseSummary, 'protectionStatus'> | null = null;
   const tracedFetch: typeof fetch = async (input, init) => {
     requestCount += 1;
     const requestId = requestCount;
     const startedAt = performance.now();
     onProgress({ phase: 'downloading', label: `Requesting YouTube audio… request ${requestId}`, fraction: null });
     try {
-      const response = await browserFetch(input, init);
+      const response = await browserFetch(input, withSabrPlaybackRate(init));
+      const elapsedMs = Math.round(performance.now() - startedAt);
+      lastSabrResponse = {
+        requestId,
+        status: response.status,
+        statusText: response.statusText.slice(0, 120),
+        contentType: (response.headers.get('content-type') || '').slice(0, 160),
+        elapsedMs,
+      };
       console.debug(
-        `[YT Local Downloader] Audio SABR request ${requestId}: HTTP ${response.status} (${Math.round(performance.now() - startedAt)} ms to headers)`,
+        `[YT Local Downloader] Audio SABR request ${requestId}: HTTP ${response.status} (${elapsedMs} ms to headers)`,
       );
       return response;
     } catch (error) {
@@ -120,6 +184,8 @@ async function downloadAudioOnly(
     if (protectionStatus === 3) {
       throw new Error('YouTube requires a fresh playback token. Reload the video, play it briefly, and retry.');
     }
+  } catch (error) {
+    throw attachSabrResponse(error, lastSabrResponse, protectionStatus);
   } finally {
     signal.removeEventListener('abort', abort);
   }
@@ -168,6 +234,7 @@ async function downloadTemporaryTracks(
   ]);
 
   let requestCount = 0;
+  let lastSabrResponse: Omit<SabrResponseSummary, 'protectionStatus'> | null = null;
   const tracedFetch: typeof fetch = async (input, init) => {
     requestCount += 1;
     const requestId = requestCount;
@@ -178,9 +245,17 @@ async function downloadTemporaryTracks(
       fraction: null,
     });
     try {
-      const response = await browserFetch(input, init);
+      const response = await browserFetch(input, withSabrPlaybackRate(init));
+      const elapsedMs = Math.round(performance.now() - startedAt);
+      lastSabrResponse = {
+        requestId,
+        status: response.status,
+        statusText: response.statusText.slice(0, 120),
+        contentType: (response.headers.get('content-type') || '').slice(0, 160),
+        elapsedMs,
+      };
       console.debug(
-        `[YT Local Downloader] SABR request ${requestId}: HTTP ${response.status} (${Math.round(performance.now() - startedAt)} ms to headers)`,
+        `[YT Local Downloader] SABR request ${requestId}: HTTP ${response.status} (${elapsedMs} ms to headers)`,
       );
       return response;
     } catch (error) {
@@ -247,7 +322,7 @@ async function downloadTemporaryTracks(
       root.removeEntry(videoName),
       root.removeEntry(audioName),
     ]);
-    throw error;
+    throw attachSabrResponse(error, lastSabrResponse, protectionStatus);
   } finally {
     signal.removeEventListener('abort', abort);
   }

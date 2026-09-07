@@ -5,8 +5,11 @@ export type JsonObject = Record<string, any>;
 export interface CapturedSession {
   playerResponse: JsonObject | null;
   playerVideoId: string | null;
+  playerResponseCapturedAt: number | null;
   poTokenByVideoId: Map<string, string>;
+  poTokenCapturedAtByVideoId: Map<string, number>;
   sabrUrlByVideoId: Map<string, string>;
+  sabrUrlCapturedAtByVideoId: Map<string, number>;
 }
 
 export interface DownloadPlan {

@@ -5,8 +5,11 @@ import type { CapturedSession, DownloadPlan, JsonObject, PlayerContext } from '.
 export const captured: CapturedSession = {
   playerResponse: null,
   playerVideoId: null,
+  playerResponseCapturedAt: null,
   poTokenByVideoId: new Map(),
+  poTokenCapturedAtByVideoId: new Map(),
   sabrUrlByVideoId: new Map(),
+  sabrUrlCapturedAtByVideoId: new Map(),
 };
 
 const nativeFetch = window.fetch.bind(window);
@@ -30,7 +33,10 @@ function looksLikeSabrUrl(value: string): boolean {
 function recordSabrUrl(value: string): void {
   if (!looksLikeSabrUrl(value)) return;
   const videoId = currentVideoId();
-  if (videoId) captured.sabrUrlByVideoId.set(videoId, value);
+  if (videoId) {
+    captured.sabrUrlByVideoId.set(videoId, value);
+    captured.sabrUrlCapturedAtByVideoId.set(videoId, Date.now());
+  }
 }
 
 function recordPlayerResponse(value: unknown): void {
@@ -40,6 +46,7 @@ function recordPlayerResponse(value: unknown): void {
   if (typeof videoId !== 'string') return;
   captured.playerResponse = response;
   captured.playerVideoId = videoId;
+  captured.playerResponseCapturedAt = Date.now();
 }
 
 function inspectPlayerRequestBody(body: unknown): void {
@@ -50,6 +57,7 @@ function inspectPlayerRequestBody(body: unknown): void {
     const poToken = data.serviceIntegrityDimensions?.poToken;
     if (typeof videoId === 'string' && typeof poToken === 'string' && poToken) {
       captured.poTokenByVideoId.set(videoId, poToken);
+      captured.poTokenCapturedAtByVideoId.set(videoId, Date.now());
     }
   } catch {
     // Non-JSON request body.
@@ -155,24 +163,75 @@ function parseAssignedJson(source: string, marker: string): JsonObject | null {
   return null;
 }
 
-function responseFromPage(): JsonObject | null {
+function responseFromPage(): { response: JsonObject; source: string } | null {
   const videoId = currentVideoId();
   const candidates = [
-    captured.playerVideoId === videoId ? captured.playerResponse : null,
-    window.movie_player?.getPlayerResponse?.(),
-    window.ytInitialPlayerResponse,
+    { response: captured.playerVideoId === videoId ? captured.playerResponse : null, source: 'captured-player-api' },
+    { response: window.movie_player?.getPlayerResponse?.(), source: 'movie-player' },
+    { response: window.ytInitialPlayerResponse, source: 'initial-player-response' },
   ];
   for (const candidate of candidates) {
-    if (candidate?.videoDetails?.videoId === videoId) return candidate;
+    if (candidate.response?.videoDetails?.videoId === videoId) return candidate as { response: JsonObject; source: string };
   }
 
   for (const script of document.scripts) {
     const text = script.textContent || '';
     if (!text.includes('ytInitialPlayerResponse')) continue;
     const parsed = parseAssignedJson(text, 'ytInitialPlayerResponse');
-    if (parsed?.videoDetails?.videoId === videoId) return parsed;
+    if (parsed?.videoDetails?.videoId === videoId) return { response: parsed, source: 'inline-script' };
   }
   return null;
+}
+
+function ageMs(capturedAt: number | undefined | null): number | null {
+  return capturedAt ? Math.max(0, Date.now() - capturedAt) : null;
+}
+
+function logSessionDiagnostics(
+  videoId: string,
+  responseSource: string,
+  response: JsonObject,
+  serverAbrStreamingUrl: string,
+  videoPlaybackUstreamerConfig: string,
+  poToken: string | undefined,
+  sabrUrlSource: 'captured-player-request' | 'player-response',
+): void {
+  const responseVideoId = response.videoDetails?.videoId;
+  const responseAgeMs = responseSource === 'captured-player-api' ? ageMs(captured.playerResponseCapturedAt) : null;
+  const sabrUrlAgeMs = sabrUrlSource === 'captured-player-request'
+    ? ageMs(captured.sabrUrlCapturedAtByVideoId.get(videoId))
+    : null;
+  const poTokenAgeMs = ageMs(captured.poTokenCapturedAtByVideoId.get(videoId));
+  const warnings: string[] = [];
+  if (responseVideoId !== videoId) warnings.push('response-video-id-mismatch');
+  if (captured.playerVideoId && captured.playerVideoId !== videoId) warnings.push('latest-captured-response-is-for-another-video');
+  if (responseAgeMs !== null && responseAgeMs > 10 * 60_000) warnings.push('captured-player-response-older-than-10m');
+  if (sabrUrlAgeMs !== null && sabrUrlAgeMs > 10 * 60_000) warnings.push('captured-sabr-url-older-than-10m');
+  if (
+    responseAgeMs !== null
+    && sabrUrlAgeMs !== null
+    && Math.abs(responseAgeMs - sabrUrlAgeMs) > 2 * 60_000
+  ) warnings.push('player-response-and-sabr-url-captured-over-2m-apart');
+  if (!poToken) warnings.push('po-token-missing');
+
+  const details = {
+    warning: 'Sensitive console-only diagnostics: do not share without removing playback credentials.',
+    videoId,
+    responseSource,
+    responseVideoId,
+    sabrUrlSource,
+    responseAgeMs,
+    sabrUrlAgeMs,
+    poTokenAgeMs,
+    serverAbrStreamingUrl,
+    videoPlaybackUstreamerConfig,
+    poToken: poToken || null,
+    clientName: safeInt32(ytcfgValue('INNERTUBE_CONTEXT_CLIENT_NAME', 1), 1),
+    clientVersion: String(ytcfgValue('INNERTUBE_CONTEXT_CLIENT_VERSION', 'unknown')),
+    warnings,
+  };
+  if (warnings.length) console.warn('[YT Local Downloader] SABR session may be mixed or stale.', details);
+  else console.debug('[YT Local Downloader] SABR session diagnostics.', details);
 }
 
 function normalizedFormat(raw: JsonObject): SabrFormat | null {
@@ -470,8 +529,9 @@ function thumbnailUrls(response: JsonObject, videoId: string): string[] {
 export function getPlayerContext(): PlayerContext {
   const videoId = currentVideoId();
   if (!videoId) throw new Error('Open a YouTube video first.');
-  const response = responseFromPage();
-  if (!response) throw new Error('YouTube player data is not ready yet. Wait a moment and try again.');
+  const selectedResponse = responseFromPage();
+  if (!selectedResponse) throw new Error('YouTube player data is not ready yet. Wait a moment and try again.');
+  const { response, source: responseSource } = selectedResponse;
   const playability = response.playabilityStatus?.status;
   if (playability && playability !== 'OK') {
     throw new Error(response.playabilityStatus?.reason || `This video is not playable (${playability}).`);
@@ -493,7 +553,8 @@ export function getPlayerContext(): PlayerContext {
   // Prefer a URL that YouTube's own player successfully requested. The URL in
   // streamingData is a fallback because it is not always fetchable from the page
   // context even when it looks complete.
-  const serverAbrStreamingUrl = captured.sabrUrlByVideoId.get(videoId) || streamingData.serverAbrStreamingUrl;
+  const capturedSabrUrl = captured.sabrUrlByVideoId.get(videoId);
+  const serverAbrStreamingUrl = capturedSabrUrl || streamingData.serverAbrStreamingUrl;
   if (!serverAbrStreamingUrl) {
     throw new Error('The SABR stream URL is not ready. Start playback briefly, then try Download again.');
   }
@@ -501,6 +562,17 @@ export function getPlayerContext(): PlayerContext {
   const videoPlaybackUstreamerConfig = response.playerConfig?.mediaCommonConfig
     ?.mediaUstreamerRequestConfig?.videoPlaybackUstreamerConfig;
   if (!videoPlaybackUstreamerConfig) throw new Error('YouTube did not provide the SABR session configuration.');
+
+  const poToken = captured.poTokenByVideoId.get(videoId);
+  logSessionDiagnostics(
+    videoId,
+    responseSource,
+    response,
+    serverAbrStreamingUrl,
+    videoPlaybackUstreamerConfig,
+    poToken,
+    capturedSabrUrl ? 'captured-player-request' : 'player-response',
+  );
 
   const durationMs = Number(response.videoDetails?.lengthSeconds || 0) * 1000
     || plans[0].video.approxDurationMs;
@@ -514,7 +586,7 @@ export function getPlayerContext(): PlayerContext {
     response,
     serverAbrStreamingUrl,
     videoPlaybackUstreamerConfig,
-    poToken: captured.poTokenByVideoId.get(videoId),
+    poToken,
     clientInfo: {
       clientName: safeInt32(ytcfgValue('INNERTUBE_CONTEXT_CLIENT_NAME', 1), 1),
       clientVersion: String(ytcfgValue('INNERTUBE_CONTEXT_CLIENT_VERSION', '2.20250101.00.00')),

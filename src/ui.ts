@@ -6,6 +6,8 @@ const NATIVE_DOWNLOAD_SELECTOR = [
   'ytd-download-button-renderer',
   'ytd-menu-service-item-download-renderer',
 ].join(',');
+const DOWNLOAD_COMPLETE_MESSAGE = 'ydown:download-complete:v1';
+const DOWNLOAD_FAILURE_MESSAGE = 'ydown:download-failure:v1';
 
 const CSS = `
 #yt-local-downloader-overlay {
@@ -52,6 +54,17 @@ const CSS = `
   font-weight:500; cursor:pointer; }
 .ytld-text-button:hover { background:rgba(6,95,212,.1); }
 html[dark] #yt-local-downloader-dialog { color:var(--yt-spec-text-primary, #f1f1f1); background:var(--yt-spec-general-background-a, #212121); }
+#ytld-downloads-page { position:relative; z-index:1; display:block; align-self:stretch; width:100%; min-width:0;
+  min-height:calc(100vh - 56px); box-sizing:border-box;
+  padding:32px max(24px, calc((100% - 1120px) / 2)); color:var(--yt-spec-text-primary, #0f0f0f);
+  background:var(--yt-spec-general-background-a, #fff); font:14px/20px Roboto,Arial,sans-serif; }
+ytd-browse.ytld-manager-host > :not(#ytld-downloads-page) { display:none !important; }
+.ytld-manager-head { display:flex; align-items:center; gap:12px; margin-bottom:28px; }
+.ytld-manager-head h1 { margin:0; font-size:28px; line-height:36px; font-weight:600; }
+.ytld-manager-badge { padding:3px 9px; border-radius:12px; color:var(--yt-spec-text-secondary,#606060);
+  background:var(--yt-spec-badge-chip-background,rgba(0,0,0,.08)); font-size:12px; font-weight:500; }
+.ytld-manager-wip { padding:24px; border-radius:12px; color:var(--yt-spec-text-secondary,#606060);
+  background:var(--yt-spec-badge-chip-background,rgba(0,0,0,.05)); }
 `;
 
 let overlay: HTMLElement | null = null;
@@ -61,6 +74,7 @@ let running = false;
 let returnFocusTo: HTMLElement | null = null;
 let currentPhase: ProgressUpdate['phase'] = 'preparing';
 let scrollToProgressPending = false;
+let managerPage: HTMLElement | null = null;
 
 function closeIcon(): SVGSVGElement {
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -92,6 +106,34 @@ function ensureStyles(): void {
   style.id = 'yt-local-downloader-styles';
   style.textContent = CSS;
   (document.head || document.documentElement).append(style);
+}
+
+function renderManagerPage(): void {
+  if (location.pathname !== '/feed/downloads') {
+    managerPage?.remove();
+    managerPage = null;
+    document.querySelectorAll('.ytld-manager-host').forEach((node) => node.classList.remove('ytld-manager-host'));
+    return;
+  }
+  ensureStyles();
+  const host = document.querySelector<HTMLElement>('ytd-page-manager > ytd-browse:not([hidden])');
+  if (!host) return;
+  document.querySelectorAll('.ytld-manager-host').forEach((node) => node.classList.remove('ytld-manager-host'));
+  host.classList.add('ytld-manager-host');
+  if (!managerPage?.isConnected) managerPage = element('main', { attrs: { id: 'ytld-downloads-page' } });
+  if (managerPage.parentElement !== host) host.append(managerPage);
+  const head = element('header', { className: 'ytld-manager-head' });
+  head.append(
+    element('h1', { text: 'Downloads' }),
+    element('span', { className: 'ytld-manager-badge', text: 'Work in progress' }),
+  );
+  managerPage.replaceChildren(
+    head,
+    element('div', {
+      className: 'ytld-manager-wip',
+      text: 'The ydown download manager is under development. Downloads continue to use the single-transfer window for now.',
+    }),
+  );
 }
 
 function ensureDialog(): HTMLElement {
@@ -147,12 +189,17 @@ function ensureDialog(): HTMLElement {
     text: 'No media is sent to a third-party service. Keep this tab open and use downloads only where you have permission.',
   });
   const actions = element('div', { className: 'ytld-actions' });
+  const hide = element('button', {
+    className: 'ytld-text-button',
+    text: 'Hide',
+    attrs: { type: 'button', 'data-ytld-hide': '', hidden: '' },
+  });
   const cancel = element('button', {
     className: 'ytld-text-button',
     text: 'Close',
     attrs: { type: 'button', 'data-ytld-cancel': '' },
   });
-  actions.append(cancel);
+  actions.append(hide, cancel);
   body.append(list, progressWrap, error, foot, actions);
   dialog.append(header, body);
   overlay.append(dialog);
@@ -174,10 +221,8 @@ function ensureDialog(): HTMLElement {
     event.preventDefault();
     event.stopPropagation();
   }, { passive: false });
-  overlay.querySelector('[data-ytld-close]')?.addEventListener('click', closeOrCancel);
-  overlay.querySelector('[data-ytld-cancel]')?.addEventListener('click', closeOrCancel);
   document.addEventListener('keydown', (event) => {
-    if (event.key === 'Escape' && overlay && !overlay.hidden) closeOrCancel();
+    if (event.key === 'Escape' && overlay && !overlay.hidden) closeOrHide();
   });
   return overlay;
 }
@@ -191,12 +236,22 @@ function closeOrCancel(): void {
   }
 }
 
-function closeDialog(): void {
-  if (running || !overlay) return;
+function closeOrHide(): void {
+  if (running) hideDialog();
+  else closeDialog();
+}
+
+function hideDialog(): void {
+  if (!overlay) return;
   overlay.hidden = true;
-  context = null;
   if (returnFocusTo?.isConnected) returnFocusTo.focus({ preventScroll: true });
   returnFocusTo = null;
+}
+
+function closeDialog(): void {
+  if (running || !overlay) return;
+  hideDialog();
+  context = null;
 }
 
 function errorMessage(error: unknown): { message: string; detail?: string } {
@@ -256,6 +311,77 @@ function clearError(): void {
   if (node) node.hidden = true;
 }
 
+function isOfflineFailure(error: unknown): boolean {
+  if (!navigator.onLine) return true;
+  const message = error instanceof Error ? error.message : String(error);
+  return /err_internet_disconnected|err_network_changed|network connection was lost|internet connection.*lost|\boffline\b|dns_probe|econnreset|enotfound|socket hang up/i.test(message);
+}
+
+function redactFailureText(value: string, limit: number): string {
+  return value
+    .replace(/https?:\/\/[^\s"'<>]+/gi, '[URL redacted]')
+    .replace(/[?&](?:pot|token|signature|sig|key)=[^\s&]+/gi, '$1=[redacted]')
+    .slice(0, limit);
+}
+
+function sabrResponseForTelemetry(error: unknown): Record<string, string | number> | null {
+  if (!(error instanceof Error) || !('sabrResponse' in error)) return null;
+  const source = (error as Error & { sabrResponse?: Record<string, unknown> }).sabrResponse;
+  if (!source || typeof source !== 'object') return null;
+  const summary: Record<string, string | number> = {};
+  for (const key of ['requestId', 'status', 'elapsedMs', 'protectionStatus'] as const) {
+    const value = Number(source[key]);
+    if (Number.isFinite(value)) summary[key] = value;
+  }
+  for (const [key, limit] of [
+    ['statusText', 120],
+    ['contentType', 160],
+    ['sabrErrorType', 120],
+    ['sabrErrorCode', 120],
+  ] as const) {
+    if (typeof source[key] === 'string') summary[key] = redactFailureText(source[key], limit);
+  }
+  return Object.keys(summary).length ? summary : null;
+}
+
+function loggedInStatus(): boolean | null {
+  try {
+    const value = window.ytcfg?.get?.('LOGGED_IN');
+    return typeof value === 'boolean' ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+function reportDownloadFailure(
+  error: unknown,
+  downloadContext: PlayerContext,
+  plan: DownloadPlan,
+  phase: ProgressUpdate['phase'],
+): void {
+  if (isOfflineFailure(error)) return;
+  const errorName = error instanceof Error ? error.name : 'Error';
+  const errorMessage = error instanceof Error ? error.message : String(error);
+  const stack = error instanceof Error ? error.stack || '' : '';
+  window.postMessage({
+    type: DOWNLOAD_FAILURE_MESSAGE,
+    errorName: redactFailureText(errorName, 120),
+    errorType: redactFailureText(errorName, 120),
+    errorMessage: redactFailureText(errorMessage, 2_000),
+    stack: redactFailureText(stack, 8_000),
+    videoId: downloadContext.videoId.slice(0, 32),
+    occurredAt: new Date().toISOString(),
+    loggedIn: loggedInStatus(),
+    sabrResponse: sabrResponseForTelemetry(error),
+    phase,
+    formatKind: plan.kind,
+    container: plan.extension,
+    videoItag: plan.video.itag,
+    audioItag: plan.audio.itag,
+    online: navigator.onLine,
+  }, location.origin);
+}
+
 function setProgress(update: ProgressUpdate): void {
   currentPhase = update.phase;
   const root = ensureDialog();
@@ -283,26 +409,33 @@ function setRunning(value: boolean): void {
     button.disabled = value;
   });
   const cancel = ensureDialog().querySelector<HTMLButtonElement>('[data-ytld-cancel]');
+  const hide = ensureDialog().querySelector<HTMLButtonElement>('[data-ytld-hide]');
   const close = ensureDialog().querySelector<HTMLButtonElement>('[data-ytld-close]');
   if (cancel) cancel.textContent = value ? 'Cancel' : 'Close';
-  if (close) close.setAttribute('aria-label', value ? 'Cancel' : 'Close');
+  if (hide) hide.hidden = !value;
+  if (close) close.setAttribute('aria-label', value ? 'Hide download window' : 'Close');
 }
 
 async function beginDownload(plan: DownloadPlan): Promise<void> {
   if (!context || running) return;
   clearError();
+  const downloadContext = context;
   const activeController = new AbortController();
   controller = activeController;
   scrollToProgressPending = true;
   setRunning(true);
   try {
-    await downloadAndMux(context, plan, activeController.signal, (update) => {
+    await downloadAndMux(downloadContext, plan, activeController.signal, (update) => {
       if (!activeController.signal.aborted) setProgress(update);
     });
     if (activeController.signal.aborted) {
       throw activeController.signal.reason || new DOMException('Canceled by user', 'AbortError');
     }
     setProgress({ phase: 'done', label: `Saved ${plan.label} ${plan.extension.toUpperCase()} to your chosen file.`, fraction: 1 });
+    window.postMessage({
+      type: DOWNLOAD_COMPLETE_MESSAGE,
+      videoTitle: downloadContext.title,
+    }, location.origin);
   } catch (error) {
     // googlevideo errors its streams with Error("Download aborted.") rather than
     // forwarding the AbortSignal's DOMException, so the signal is authoritative.
@@ -310,6 +443,7 @@ async function beginDownload(plan: DownloadPlan): Promise<void> {
       const wrap = ensureDialog().querySelector<HTMLElement>('[data-ytld-progress-wrap]');
       if (wrap) wrap.hidden = true;
     } else {
+      reportDownloadFailure(error, downloadContext, plan, currentPhase);
       setError(error);
       setProgress({ phase: currentPhase, label: 'Download stopped.', fraction: 0 });
     }
@@ -327,18 +461,18 @@ function renderPlans(plans: DownloadPlan[]): void {
     if (!groupPlans.length) return;
     list.append(element('h3', { className: 'ytld-group-heading', text: title }));
     for (const plan of groupPlans) {
-    const button = document.createElement('button');
-    button.className = 'ytld-quality';
-    button.type = 'button';
-    button.dataset.ytldKind = plan.kind;
-    if (plan.kind === 'video') button.dataset.ytldVideoItag = String(plan.video.itag);
-    button.dataset.ytldAudioItag = String(plan.audio.itag);
-    button.append(
-      element('strong', { text: plan.label }),
-      element('span', { text: plan.detail }),
-    );
-    button.addEventListener('click', () => void beginDownload(plan));
-    list.append(button);
+      const button = document.createElement('button');
+      button.className = 'ytld-quality';
+      button.type = 'button';
+      button.dataset.ytldKind = plan.kind;
+      button.dataset.ytldPlanId = plan.id;
+      if (plan.kind === 'video') button.dataset.ytldVideoItag = String(plan.video.itag);
+      button.dataset.ytldAudioItag = String(plan.audio.itag);
+      button.append(
+        element('strong', { text: plan.label }),
+        element('span', { text: plan.detail }),
+      );
+      list.append(button);
     }
   };
   const audioPlans = plans.filter((plan) => plan.kind === 'audio');
@@ -351,6 +485,7 @@ export function openDialog(): void {
   returnFocusTo = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   root.hidden = false;
   root.querySelector<HTMLElement>('#yt-local-downloader-dialog')?.focus({ preventScroll: true });
+  if (running) return;
   clearError();
   currentPhase = 'preparing';
   const progress = root.querySelector<HTMLElement>('[data-ytld-progress-wrap]');
@@ -368,12 +503,31 @@ export function openDialog(): void {
 }
 
 export function installUi(): void {
+  document.addEventListener('yt-navigate-finish', renderManagerPage);
+  window.addEventListener('popstate', renderManagerPage);
+  queueMicrotask(renderManagerPage);
   document.addEventListener('click', (event) => {
-    const target = event.target instanceof Element ? event.target.closest(NATIVE_DOWNLOAD_SELECTOR) : null;
-    if (!target) return;
+    if (!(event.target instanceof Element)) return;
+    const quality = event.target.closest<HTMLButtonElement>('[data-ytld-plan-id]');
+    const close = event.target.closest<HTMLElement>('[data-ytld-close]');
+    const hide = event.target.closest<HTMLElement>('[data-ytld-hide]');
+    const cancel = event.target.closest<HTMLElement>('[data-ytld-cancel]');
+    const nativeDownload = event.target.closest(NATIVE_DOWNLOAD_SELECTOR);
+    if (!quality && !close && !hide && !cancel && !nativeDownload) return;
     event.preventDefault();
     event.stopPropagation();
     event.stopImmediatePropagation();
-    openDialog();
+    if (quality) {
+      const plan = context?.plans.find((candidate) => candidate.id === quality.dataset.ytldPlanId);
+      if (plan) void beginDownload(plan);
+    } else if (close) {
+      closeOrHide();
+    } else if (hide) {
+      hideDialog();
+    } else if (cancel) {
+      closeOrCancel();
+    } else if (nativeDownload) {
+      openDialog();
+    }
   }, true);
 }

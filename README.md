@@ -13,6 +13,11 @@ we hook into youtube's native download button and turn it into something actuall
 - audio-only downloads for music (videos)
 - thumbnails embedded in your download
 - video codec blocks enforced by enhanced-h264ify respected
+- hide the download window while one transfer continues across youtube navigation
+- download complete notifications
+- update notifications
+
+the replacement Downloads page is still a work in progress. multi-download support is disabled while we isolate it from youtube playback.
 
 only download videos you're authorized or otherwise have permission to save
 
@@ -29,6 +34,9 @@ npm run build
 
 `npm run build` builds the primary extension artifact in
 `../../outputs/youtube-local-downloader-extension`.
+
+For telemetry-enabled local builds, copy `.env.example` to `.env.local` and set
+`SENTRY_DSN`. Release builds expect a GitHub Actions secret with the same name.
 
 ## installing
 
@@ -70,6 +78,7 @@ experimental artifact.
 - live streams, rentals, primetime, youtube movies, shorts (in shorts view), and anything without the native 
   Download button are not supported.
 - sometimes ydown might not work if you leave the video tab open for too long. if such a problem occurs simply reload the page, play the video briefly and retry
+- sometimes the extension may fail to nab the potoken. this seems to mostly be limited to fresh youtube pages but i'm trying to rule out what's causing the problem and if needed, add it's own generator
 
 ## special thanks
 

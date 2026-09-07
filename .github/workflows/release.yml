@@ -13,6 +13,8 @@ jobs:
   release:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
 
     steps:
       - name: Check out repository
@@ -29,6 +31,11 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Verify release secrets
+        shell: bash
+        run: |
+          test -n "$SENTRY_DSN"
 
       - name: Check and test
         run: |

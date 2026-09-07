@@ -34,7 +34,7 @@ await build({
 const metadata = `// ==UserScript==
 // @name         YouTube Local Browser Downloader
 // @namespace    local.youtube.downloader
-// @version      0.5.1
+// @version      0.5.2
 // @description  Downloads and muxes YouTube streams locally inside the browser.
 // @match        https://www.youtube.com/*
 // @match        https://youtube.com/*
