@@ -24,7 +24,7 @@ await build({
 
 await Promise.all([
   cp(resolve(root, 'extension/manifest.json'), resolve(output, 'manifest.json')),
-  cp(resolve(root, 'extension/README.md'), resolve(output, 'README.md')),
+  cp(resolve(root, 'README.md'), resolve(output, 'README.md')),
   cp(resolve(root, 'node_modules/googlevideo/LICENSE'), resolve(output, 'LICENSE-googlevideo.txt')),
   cp(resolve(root, 'node_modules/mediabunny/LICENSE'), resolve(output, 'LICENSE-mediabunny.txt')),
 ]);

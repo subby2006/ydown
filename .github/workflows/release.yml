@@ -1,0 +1,68 @@
+name: Build and release extension
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          package-manager-cache: false
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check and test
+        run: |
+          npm run check
+          npm test
+
+      - name: Package extension
+        shell: bash
+        run: |
+          extension_dir="$GITHUB_WORKSPACE/../../outputs/youtube-local-downloader-extension"
+          test -f "$extension_dir/manifest.json"
+          test -f "$extension_dir/content.js"
+
+          mkdir -p "$GITHUB_WORKSPACE/release"
+          (
+            cd "$extension_dir"
+            zip -9 -r "$GITHUB_WORKSPACE/release/ydown-extension.zip" .
+          )
+          cd "$GITHUB_WORKSPACE/release"
+          sha256sum ydown-extension.zip > ydown-extension.zip.sha256
+          unzip -t ydown-extension.zip
+
+      - name: Create commit release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          short_sha="${GITHUB_SHA::7}"
+          tag="build-${GITHUB_RUN_NUMBER}.${GITHUB_RUN_ATTEMPT}-${short_sha}"
+          gh release create "$tag" \
+            release/ydown-extension.zip \
+            release/ydown-extension.zip.sha256 \
+            --target "$GITHUB_SHA" \
+            --title "ydown build ${GITHUB_RUN_NUMBER}.${GITHUB_RUN_ATTEMPT} (${short_sha})" \
+            --generate-notes \
+            --prerelease \
+            --latest=false
