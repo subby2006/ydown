@@ -7,6 +7,7 @@
   "scripts": {
     "build": "node scripts/build-extension.mjs",
     "build:extension": "node scripts/build-extension.mjs",
+    "build:extension:diagnostic": "node scripts/build-extension.mjs --diagnostic-storage",
     "build:userscript": "node scripts/build.mjs --experimental-userscript",
     "check": "tsc --noEmit",
     "test": "npm run build:extension && npm run build:userscript && node --test test/*.test.mjs"

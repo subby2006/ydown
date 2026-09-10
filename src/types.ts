@@ -10,6 +10,10 @@ export interface CapturedSession {
   poTokenCapturedAtByVideoId: Map<string, number>;
   sabrUrlByVideoId: Map<string, string>;
   sabrUrlCapturedAtByVideoId: Map<string, number>;
+  nativeSabrConfigByVideoId: Map<string, string>;
+  nativeSabrPoTokenByVideoId: Map<string, string>;
+  nativeSabrBodyCapturedAtByVideoId: Map<string, number>;
+  nativeSabrBodyDiagnosticsByVideoId: Map<string, JsonObject>;
 }
 
 export interface DownloadPlan {

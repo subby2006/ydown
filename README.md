@@ -35,6 +35,17 @@ npm run build
 `npm run build` builds the primary extension artifact in
 `../../outputs/youtube-local-downloader-extension`.
 
+To compile a diagnostic build that bypasses the save picker and writes completed
+files to origin-private browser storage, run:
+
+```powershell
+npm run build:extension:diagnostic
+```
+
+It writes `../../outputs/youtube-local-downloader-extension-diagnostic`. This is
+a build-time variant: normal builds contain only the save-picker path, while
+diagnostic builds contain only the browser-storage path.
+
 For telemetry-enabled local builds, copy `.env.example` to `.env.local` and set
 `SENTRY_DSN`. Release builds expect a GitHub Actions secret with the same name.
 
@@ -78,7 +89,6 @@ experimental artifact.
 - live streams, rentals, primetime, youtube movies, shorts (in shorts view), and anything without the native 
   Download button are not supported.
 - sometimes ydown might not work if you leave the video tab open for too long. if such a problem occurs simply reload the page, play the video briefly and retry
-- sometimes the extension may fail to nab the potoken. this seems to mostly be limited to fresh youtube pages but i'm trying to rule out what's causing the problem and if needed, add it's own generator
 
 ## special thanks
 

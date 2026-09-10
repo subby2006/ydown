@@ -1,4 +1,4 @@
-import { downloadAndMux } from './downloader';
+import { downloadAndMux, usesBrowserStorageDestination } from './downloader';
 import { getPlayerContext } from './player-data';
 import type { DownloadPlan, PlayerContext, ProgressUpdate } from './types';
 
@@ -54,17 +54,36 @@ const CSS = `
   font-weight:500; cursor:pointer; }
 .ytld-text-button:hover { background:rgba(6,95,212,.1); }
 html[dark] #yt-local-downloader-dialog { color:var(--yt-spec-text-primary, #f1f1f1); background:var(--yt-spec-general-background-a, #212121); }
-#ytld-downloads-page { position:relative; z-index:1; display:block; align-self:stretch; width:100%; min-width:0;
+#ytld-page { position:relative; z-index:1; display:block; align-self:stretch; width:100%; min-width:0;
   min-height:calc(100vh - 56px); box-sizing:border-box;
   padding:32px max(24px, calc((100% - 1120px) / 2)); color:var(--yt-spec-text-primary, #0f0f0f);
   background:var(--yt-spec-general-background-a, #fff); font:14px/20px Roboto,Arial,sans-serif; }
-ytd-browse.ytld-manager-host > :not(#ytld-downloads-page) { display:none !important; }
+ytd-browse.ytld-manager-host > :not(#ytld-page) { display:none !important; }
+ytd-browse.ytld-settings-host > :not(#ytld-page):not(ytd-settings-sidebar-renderer) { display:none !important; }
 .ytld-manager-head { display:flex; align-items:center; gap:12px; margin-bottom:28px; }
 .ytld-manager-head h1 { margin:0; font-size:28px; line-height:36px; font-weight:600; }
 .ytld-manager-badge { padding:3px 9px; border-radius:12px; color:var(--yt-spec-text-secondary,#606060);
   background:var(--yt-spec-badge-chip-background,rgba(0,0,0,.08)); font-size:12px; font-weight:500; }
+.ytld-manager-settings { margin-left:auto; display:inline-flex; align-items:center; gap:8px; padding:9px 14px;
+  border-radius:18px; color:var(--yt-spec-text-primary,#0f0f0f); background:transparent;
+  font-weight:500; text-decoration:none; }
+.ytld-manager-settings:hover { background:var(--yt-spec-badge-chip-background,rgba(0,0,0,.08)); }
+.ytld-manager-settings svg { width:20px; height:20px; }
 .ytld-manager-wip { padding:24px; border-radius:12px; color:var(--yt-spec-text-secondary,#606060);
   background:var(--yt-spec-badge-chip-background,rgba(0,0,0,.05)); }
+.ytld-settings-card { max-width:760px; border-top:1px solid var(--yt-spec-10-percent-layer,rgba(0,0,0,.14)); }
+.ytld-settings-row { display:flex; align-items:center; gap:28px; padding:22px 0;
+  border-bottom:1px solid var(--yt-spec-10-percent-layer,rgba(0,0,0,.14)); }
+.ytld-settings-copy { flex:1; min-width:0; }
+.ytld-settings-copy strong { display:block; font-size:16px; line-height:22px; font-weight:500; }
+.ytld-settings-copy span { display:block; margin-top:5px; color:var(--yt-spec-text-secondary,#606060); }
+.ytld-toggle { position:relative; flex:0 0 auto; width:36px; height:20px; padding:0; border:0;
+  border-radius:10px; background:var(--yt-spec-icon-disabled,#909090); cursor:pointer; }
+.ytld-toggle::after { content:''; position:absolute; top:2px; left:2px; width:16px; height:16px;
+  border-radius:50%; background:#fff; box-shadow:0 1px 2px rgba(0,0,0,.35); transition:transform .15s ease; }
+.ytld-toggle[aria-checked='true'] { background:#065fd4; }
+.ytld-toggle[aria-checked='true']::after { transform:translateX(16px); }
+.ytld-toggle:focus-visible { outline:2px solid #065fd4; outline-offset:3px; }
 `;
 
 let overlay: HTMLElement | null = null;
@@ -74,7 +93,12 @@ let running = false;
 let returnFocusTo: HTMLElement | null = null;
 let currentPhase: ProgressUpdate['phase'] = 'preparing';
 let scrollToProgressPending = false;
-let managerPage: HTMLElement | null = null;
+let ydownPage: HTMLElement | null = null;
+let pageManagerObserver: MutationObserver | null = null;
+let observedPageManager: Element | null = null;
+let activePageHostObserver: MutationObserver | null = null;
+let observedActivePageHost: Element | null = null;
+const STRIP_NON_MUSIC_SECTIONS_KEY = 'ydown:strip-non-music-sections';
 
 function closeIcon(): SVGSVGElement {
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -108,32 +132,143 @@ function ensureStyles(): void {
   (document.head || document.documentElement).append(style);
 }
 
-function renderManagerPage(): void {
-  if (location.pathname !== '/feed/downloads') {
-    managerPage?.remove();
-    managerPage = null;
-    document.querySelectorAll('.ytld-manager-host').forEach((node) => node.classList.remove('ytld-manager-host'));
-    return;
+function settingsIcon(): SVGSVGElement {
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.setAttribute('aria-hidden', 'true');
+  const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+  path.setAttribute('fill', 'currentColor');
+  path.setAttribute('d', 'M19.43 12.98c.04-.32.07-.65.07-.98s-.03-.66-.08-.98l2.11-1.65-2-3.46-2.49 1a7.2 7.2 0 0 0-1.69-.98L15 3.25h-4l-.35 2.68c-.61.25-1.17.58-1.69.98l-2.49-1-2 3.46 2.11 1.65c-.05.32-.08.66-.08.98s.03.66.08.98l-2.11 1.65 2 3.46 2.49-1c.52.4 1.08.73 1.69.98L11 20.75h4l.35-2.68c.61-.25 1.17-.58 1.69-.98l2.49 1 2-3.46-2.1-1.65ZM13 15.5A3.5 3.5 0 1 1 13 8a3.5 3.5 0 0 1 0 7.5Z');
+  svg.append(path);
+  return svg;
+}
+
+function storedToggle(key: string): boolean {
+  try {
+    return localStorage.getItem(key) === 'true';
+  } catch {
+    return false;
   }
-  ensureStyles();
-  const host = document.querySelector<HTMLElement>('ytd-page-manager > ytd-browse:not([hidden])');
-  if (!host) return;
-  document.querySelectorAll('.ytld-manager-host').forEach((node) => node.classList.remove('ytld-manager-host'));
-  host.classList.add('ytld-manager-host');
-  if (!managerPage?.isConnected) managerPage = element('main', { attrs: { id: 'ytld-downloads-page' } });
-  if (managerPage.parentElement !== host) host.append(managerPage);
+}
+
+function setStoredToggle(key: string, enabled: boolean): void {
+  try {
+    localStorage.setItem(key, String(enabled));
+  } catch {
+    // The preference stays usable for this render if storage is unavailable.
+  }
+}
+
+function managerContent(): HTMLElement[] {
   const head = element('header', { className: 'ytld-manager-head' });
+  const settings = element('a', {
+    className: 'ytld-manager-settings',
+    attrs: { href: '/account_downloads', 'aria-label': 'ydown settings' },
+  });
+  settings.append(settingsIcon(), element('span', { text: 'Settings' }));
   head.append(
     element('h1', { text: 'Downloads' }),
     element('span', { className: 'ytld-manager-badge', text: 'Work in progress' }),
+    settings,
   );
-  managerPage.replaceChildren(
+  return [
     head,
     element('div', {
       className: 'ytld-manager-wip',
       text: 'The ydown download manager is under development. Downloads continue to use the single-transfer window for now.',
     }),
+  ];
+}
+
+function settingsContent(): HTMLElement[] {
+  const head = element('header', { className: 'ytld-manager-head' });
+  head.append(
+    element('h1', { text: 'ydown settings' }),
+    element('span', { className: 'ytld-manager-badge', text: 'Experimental' }),
   );
+
+  const enabled = storedToggle(STRIP_NON_MUSIC_SECTIONS_KEY);
+  const toggle = element('button', {
+    className: 'ytld-toggle',
+    attrs: {
+      type: 'button',
+      role: 'switch',
+      'aria-label': 'Strip non-music sections from music downloads',
+      'aria-checked': String(enabled),
+    },
+  });
+  toggle.addEventListener('click', () => {
+    const next = toggle.getAttribute('aria-checked') !== 'true';
+    toggle.setAttribute('aria-checked', String(next));
+    setStoredToggle(STRIP_NON_MUSIC_SECTIONS_KEY, next);
+  });
+
+  const copy = element('div', { className: 'ytld-settings-copy' });
+  copy.append(
+    element('strong', { text: 'Strip non-music sections from music downloads' }),
+    element('span', {
+      text: 'Not implemented yet. This will eventually use SponsorBlock music tags to remove non-music sections from eligible audio downloads.',
+    }),
+  );
+  const row = element('div', { className: 'ytld-settings-row' });
+  row.append(copy, toggle);
+  const card = element('section', { className: 'ytld-settings-card', attrs: { 'aria-label': 'Download settings' } });
+  card.append(row);
+  return [head, card];
+}
+
+function renderYdownPage(): void {
+  const isManager = location.pathname === '/feed/downloads';
+  const isSettings = location.pathname === '/account_downloads';
+  if (!isManager && !isSettings) {
+    activePageHostObserver?.disconnect();
+    activePageHostObserver = null;
+    observedActivePageHost = null;
+    ydownPage?.remove();
+    ydownPage = null;
+    document.querySelectorAll('.ytld-manager-host, .ytld-settings-host').forEach((node) => {
+      node.classList.remove('ytld-manager-host', 'ytld-settings-host');
+    });
+    return;
+  }
+  ensureStyles();
+  const host = document.querySelector<HTMLElement>('ytd-page-manager > ytd-browse:not([hidden])');
+  if (!host) return;
+  document.querySelectorAll('.ytld-manager-host, .ytld-settings-host').forEach((node) => {
+    node.classList.remove('ytld-manager-host', 'ytld-settings-host');
+  });
+  host.classList.add(isManager ? 'ytld-manager-host' : 'ytld-settings-host');
+  if (!ydownPage?.isConnected) ydownPage = element('main', { attrs: { id: 'ytld-page' } });
+  if (ydownPage.parentElement !== host) host.append(ydownPage);
+  observeActivePageHost(host);
+  ydownPage.replaceChildren(...(isManager ? managerContent() : settingsContent()));
+}
+
+function observeActivePageHost(host: Element): void {
+  if (observedActivePageHost === host && activePageHostObserver) return;
+  activePageHostObserver?.disconnect();
+  observedActivePageHost = host;
+  activePageHostObserver = new MutationObserver(() => {
+    if (!ydownPage?.isConnected || ydownPage.parentElement !== host) queueMicrotask(renderYdownPage);
+  });
+  activePageHostObserver.observe(host, { childList: true });
+}
+
+function observePageHostChanges(): void {
+  const pageManager = document.querySelector('ytd-page-manager');
+  if (!pageManager) return;
+  if (observedPageManager !== pageManager || !pageManagerObserver) {
+    pageManagerObserver?.disconnect();
+    observedPageManager = pageManager;
+    pageManagerObserver = new MutationObserver(() => queueMicrotask(() => {
+      observePageHostChanges();
+      renderYdownPage();
+    }));
+  }
+  pageManagerObserver.observe(pageManager, { childList: true });
+  pageManager.querySelectorAll(':scope > ytd-browse').forEach((browse) => {
+    pageManagerObserver?.observe(browse, { attributes: true, attributeFilter: ['hidden'] });
+  });
 }
 
 function ensureDialog(): HTMLElement {
@@ -419,7 +554,20 @@ function setRunning(value: boolean): void {
 async function beginDownload(plan: DownloadPlan): Promise<void> {
   if (!context || running) return;
   clearError();
-  const downloadContext = context;
+  // Refresh at the last possible moment. On some YouTube variants the player
+  // request omits the PO token and the authoritative token only arrives in the
+  // native SABR request after the quality picker has already opened.
+  let downloadContext: PlayerContext;
+  try {
+    downloadContext = getPlayerContext();
+    const refreshedPlan = downloadContext.plans.find((candidate) => candidate.id === plan.id);
+    if (!refreshedPlan) throw new Error('That format is no longer available. Reopen Download and try again.');
+    plan = refreshedPlan;
+    context = downloadContext;
+  } catch (error) {
+    setError(error);
+    return;
+  }
   const activeController = new AbortController();
   controller = activeController;
   scrollToProgressPending = true;
@@ -431,7 +579,13 @@ async function beginDownload(plan: DownloadPlan): Promise<void> {
     if (activeController.signal.aborted) {
       throw activeController.signal.reason || new DOMException('Canceled by user', 'AbortError');
     }
-    setProgress({ phase: 'done', label: `Saved ${plan.label} ${plan.extension.toUpperCase()} to your chosen file.`, fraction: 1 });
+    setProgress({
+      phase: 'done',
+      label: usesBrowserStorageDestination()
+        ? `Saved ${plan.label} ${plan.extension.toUpperCase()} to diagnostic browser storage.`
+        : `Saved ${plan.label} ${plan.extension.toUpperCase()} to your chosen file.`,
+      fraction: 1,
+    });
     window.postMessage({
       type: DOWNLOAD_COMPLETE_MESSAGE,
       videoTitle: downloadContext.title,
@@ -503,9 +657,15 @@ export function openDialog(): void {
 }
 
 export function installUi(): void {
-  document.addEventListener('yt-navigate-finish', renderManagerPage);
-  window.addEventListener('popstate', renderManagerPage);
-  queueMicrotask(renderManagerPage);
+  document.addEventListener('yt-navigate-finish', () => {
+    observePageHostChanges();
+    renderYdownPage();
+  });
+  window.addEventListener('popstate', renderYdownPage);
+  queueMicrotask(() => {
+    observePageHostChanges();
+    renderYdownPage();
+  });
   document.addEventListener('click', (event) => {
     if (!(event.target instanceof Element)) return;
     const quality = event.target.closest<HTMLButtonElement>('[data-ytld-plan-id]');

@@ -5,7 +5,13 @@ import { loadEnvFile } from 'node:process';
 import { fileURLToPath } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const output = resolve(root, '../../outputs/youtube-local-downloader-extension');
+const diagnosticStorage = process.argv.includes('--diagnostic-storage');
+const output = resolve(
+  root,
+  diagnosticStorage
+    ? '../../outputs/youtube-local-downloader-extension-diagnostic'
+    : '../../outputs/youtube-local-downloader-extension',
+);
 
 try {
   loadEnvFile(resolve(root, '.env.local'));
@@ -50,7 +56,10 @@ await build({
   target: ['chrome120'],
   minify: true,
   treeShaking: true,
-  define: { 'process.env.NODE_ENV': '"production"' },
+  define: {
+    'process.env.NODE_ENV': '"production"',
+    __YDOWN_BROWSER_STORAGE_ONLY__: String(diagnosticStorage),
+  },
   legalComments: 'eof',
 });
 

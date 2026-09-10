@@ -1,4 +1,5 @@
 import { buildSabrFormat } from 'googlevideo/utils';
+import { VideoPlaybackAbrRequest } from 'googlevideo/protos';
 import type { SabrFormat } from 'googlevideo/shared-types';
 import type { CapturedSession, DownloadPlan, JsonObject, PlayerContext } from './types';
 
@@ -10,6 +11,10 @@ export const captured: CapturedSession = {
   poTokenCapturedAtByVideoId: new Map(),
   sabrUrlByVideoId: new Map(),
   sabrUrlCapturedAtByVideoId: new Map(),
+  nativeSabrConfigByVideoId: new Map(),
+  nativeSabrPoTokenByVideoId: new Map(),
+  nativeSabrBodyCapturedAtByVideoId: new Map(),
+  nativeSabrBodyDiagnosticsByVideoId: new Map(),
 };
 
 const nativeFetch = window.fetch.bind(window);
@@ -37,6 +42,84 @@ function recordSabrUrl(value: string): void {
     captured.sabrUrlByVideoId.set(videoId, value);
     captured.sabrUrlCapturedAtByVideoId.set(videoId, Date.now());
   }
+}
+
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = '';
+  for (let offset = 0; offset < bytes.length; offset += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
+  }
+  return btoa(binary);
+}
+
+function bodyType(body: unknown): string {
+  if (body === null) return 'null';
+  if (body === undefined) return 'undefined';
+  return Object.prototype.toString.call(body).slice(8, -1);
+}
+
+function inspectNativeSabrBytes(videoId: string | null, bytes: Uint8Array, source: string): void {
+  if (!videoId) return;
+  const capturedAt = Date.now();
+  try {
+    const request = VideoPlaybackAbrRequest.decode(bytes);
+    const config = request.videoPlaybackUstreamerConfig;
+    const poToken = request.streamerContext?.poToken;
+    if (config?.length) captured.nativeSabrConfigByVideoId.set(videoId, bytesToBase64(config));
+    if (poToken?.length) captured.nativeSabrPoTokenByVideoId.set(videoId, bytesToBase64(poToken));
+    captured.nativeSabrBodyCapturedAtByVideoId.set(videoId, capturedAt);
+    captured.nativeSabrBodyDiagnosticsByVideoId.set(videoId, {
+      source,
+      byteLength: bytes.byteLength,
+      decoded: true,
+      configPresent: Boolean(config?.length),
+      poTokenPresent: Boolean(poToken?.length),
+      clientInfoPresent: Boolean(request.streamerContext?.clientInfo),
+    });
+  } catch (error) {
+    captured.nativeSabrBodyCapturedAtByVideoId.set(videoId, capturedAt);
+    captured.nativeSabrBodyDiagnosticsByVideoId.set(videoId, {
+      source,
+      byteLength: bytes.byteLength,
+      decoded: false,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+function inspectNativeSabrBody(videoId: string | null, body: unknown, source: string): void {
+  if (!videoId) return;
+  if (body instanceof ArrayBuffer) {
+    inspectNativeSabrBytes(videoId, new Uint8Array(body), source);
+    return;
+  }
+  if (ArrayBuffer.isView(body)) {
+    inspectNativeSabrBytes(
+      videoId,
+      new Uint8Array(body.buffer, body.byteOffset, body.byteLength),
+      source,
+    );
+    return;
+  }
+  if (body instanceof Blob) {
+    void body.arrayBuffer()
+      .then((value) => inspectNativeSabrBytes(videoId, new Uint8Array(value), `${source}:blob`))
+      .catch((error) => {
+        captured.nativeSabrBodyDiagnosticsByVideoId.set(videoId, {
+          source,
+          bodyType: bodyType(body),
+          decoded: false,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+    return;
+  }
+  captured.nativeSabrBodyDiagnosticsByVideoId.set(videoId, {
+    source,
+    bodyType: bodyType(body),
+    decoded: false,
+    error: 'unsupported-or-missing-body',
+  });
 }
 
 function recordPlayerResponse(value: unknown): void {
@@ -74,6 +157,22 @@ export function installNetworkCapture(): void {
     const url = typeof input === 'string' || input instanceof URL ? String(input) : input.url;
     recordSabrUrl(url);
 
+    if (looksLikeSabrUrl(url)) {
+      const videoId = currentVideoId();
+      inspectNativeSabrBody(videoId, init?.body, 'fetch-init');
+      if (input instanceof Request) {
+        void input.clone().arrayBuffer()
+          .then((value) => inspectNativeSabrBytes(videoId, new Uint8Array(value), 'fetch-request-clone'))
+          .catch((error) => {
+            if (videoId) captured.nativeSabrBodyDiagnosticsByVideoId.set(videoId, {
+              source: 'fetch-request-clone',
+              decoded: false,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          });
+      }
+    }
+
     if (url.includes('/youtubei/v1/player')) {
       inspectPlayerRequestBody(init?.body);
       if (input instanceof Request) {
@@ -109,6 +208,7 @@ export function installNetworkCapture(): void {
 
   XMLHttpRequest.prototype.send = function patchedSend(body?: Document | XMLHttpRequestBodyInit | null): void {
     const url = (this as XMLHttpRequest & { [requestUrl]?: string })[requestUrl] || '';
+    if (looksLikeSabrUrl(url)) inspectNativeSabrBody(currentVideoId(), body, 'xhr-send');
     if (url.includes('/youtubei/v1/player')) {
       inspectPlayerRequestBody(body);
       this.addEventListener('load', () => {
@@ -195,6 +295,8 @@ function logSessionDiagnostics(
   videoPlaybackUstreamerConfig: string,
   poToken: string | undefined,
   sabrUrlSource: 'captured-player-request' | 'player-response',
+  configSource: 'captured-native-sabr-request' | 'player-response',
+  poTokenSource: 'captured-native-sabr-request' | 'captured-player-request' | 'missing',
 ): void {
   const responseVideoId = response.videoDetails?.videoId;
   const responseAgeMs = responseSource === 'captured-player-api' ? ageMs(captured.playerResponseCapturedAt) : null;
@@ -202,6 +304,8 @@ function logSessionDiagnostics(
     ? ageMs(captured.sabrUrlCapturedAtByVideoId.get(videoId))
     : null;
   const poTokenAgeMs = ageMs(captured.poTokenCapturedAtByVideoId.get(videoId));
+  const nativeSabrBodyAgeMs = ageMs(captured.nativeSabrBodyCapturedAtByVideoId.get(videoId));
+  const nativeSabrBodyDiagnostics = captured.nativeSabrBodyDiagnosticsByVideoId.get(videoId) || null;
   const warnings: string[] = [];
   if (responseVideoId !== videoId) warnings.push('response-video-id-mismatch');
   if (captured.playerVideoId && captured.playerVideoId !== videoId) warnings.push('latest-captured-response-is-for-another-video');
@@ -223,15 +327,20 @@ function logSessionDiagnostics(
     responseAgeMs,
     sabrUrlAgeMs,
     poTokenAgeMs,
+    nativeSabrBodyAgeMs,
+    nativeSabrBodyDiagnostics,
     serverAbrStreamingUrl,
     videoPlaybackUstreamerConfig,
     poToken: poToken || null,
+    configSource,
+    poTokenSource,
     clientName: safeInt32(ytcfgValue('INNERTUBE_CONTEXT_CLIENT_NAME', 1), 1),
     clientVersion: String(ytcfgValue('INNERTUBE_CONTEXT_CLIENT_VERSION', 'unknown')),
     warnings,
   };
-  if (warnings.length) console.warn('[YT Local Downloader] SABR session may be mixed or stale.', details);
-  else console.debug('[YT Local Downloader] SABR session diagnostics.', details);
+  const serialized = JSON.stringify(details);
+  if (warnings.length) console.warn('[YT Local Downloader] SABR session may be mixed or stale.', details, serialized);
+  else console.debug('[YT Local Downloader] SABR session diagnostics.', details, serialized);
 }
 
 function normalizedFormat(raw: JsonObject): SabrFormat | null {
@@ -559,11 +668,17 @@ export function getPlayerContext(): PlayerContext {
     throw new Error('The SABR stream URL is not ready. Start playback briefly, then try Download again.');
   }
 
-  const videoPlaybackUstreamerConfig = response.playerConfig?.mediaCommonConfig
+  const nativeSabrConfig = captured.nativeSabrConfigByVideoId.get(videoId);
+  const responseSabrConfig = response.playerConfig?.mediaCommonConfig
     ?.mediaUstreamerRequestConfig?.videoPlaybackUstreamerConfig;
+  const videoPlaybackUstreamerConfig = nativeSabrConfig || responseSabrConfig;
   if (!videoPlaybackUstreamerConfig) throw new Error('YouTube did not provide the SABR session configuration.');
 
-  const poToken = captured.poTokenByVideoId.get(videoId);
+  const nativeSabrPoToken = captured.nativeSabrPoTokenByVideoId.get(videoId);
+  const playerRequestPoToken = captured.poTokenByVideoId.get(videoId);
+  // Prefer the token YouTube supplied to the matching /player request. The
+  // native SABR body remains a fallback for variants that omit it there.
+  const poToken = playerRequestPoToken || nativeSabrPoToken;
   logSessionDiagnostics(
     videoId,
     responseSource,
@@ -572,6 +687,10 @@ export function getPlayerContext(): PlayerContext {
     videoPlaybackUstreamerConfig,
     poToken,
     capturedSabrUrl ? 'captured-player-request' : 'player-response',
+    nativeSabrConfig ? 'captured-native-sabr-request' : 'player-response',
+    playerRequestPoToken
+      ? 'captured-player-request'
+      : nativeSabrPoToken ? 'captured-native-sabr-request' : 'missing',
   );
 
   const durationMs = Number(response.videoDetails?.lengthSeconds || 0) * 1000

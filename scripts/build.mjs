@@ -27,7 +27,10 @@ await build({
   target: ['chrome120'],
   minify: true,
   treeShaking: true,
-  define: { 'process.env.NODE_ENV': '"production"' },
+  define: {
+    'process.env.NODE_ENV': '"production"',
+    __YDOWN_BROWSER_STORAGE_ONLY__: 'false',
+  },
   legalComments: 'eof',
 });
 

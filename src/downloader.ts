@@ -19,6 +19,8 @@ import {
 import { browserFetch, formatBytes } from './player-data';
 import type { DownloadPlan, PlayerContext, ProgressUpdate } from './types';
 
+declare const __YDOWN_BROWSER_STORAGE_ONLY__: boolean;
+
 interface TemporaryTracks {
   root: FileSystemDirectoryHandle;
   videoName: string;
@@ -92,7 +94,27 @@ export function safeFilename(value: string): string {
   return (result || 'YouTube video').slice(0, 180);
 }
 
-async function chooseDestination(context: PlayerContext, plan: DownloadPlan): Promise<FileSystemFileHandle> {
+async function chooseBrowserStorageDestination(
+  context: PlayerContext,
+  plan: DownloadPlan,
+): Promise<FileSystemFileHandle> {
+  if (!navigator.storage.getDirectory) {
+    throw new Error('Origin-private browser storage is unavailable.');
+  }
+  const root = await navigator.storage.getDirectory();
+  const downloads = await root.getDirectoryHandle('ydown-diagnostic-downloads', { create: true });
+  const filename = `${safeFilename(context.title)}-${context.videoId}-${Date.now()}.${plan.extension}`;
+  console.info('[YT Local Downloader] Diagnostic storage mode: writing output to browser storage.', {
+    directory: 'ydown-diagnostic-downloads',
+    filename,
+  });
+  return downloads.getFileHandle(filename, { create: true });
+}
+
+async function chooseSavePickerDestination(
+  context: PlayerContext,
+  plan: DownloadPlan,
+): Promise<FileSystemFileHandle> {
   if (!window.showSaveFilePicker) {
     throw new Error('This browser does not support direct file saving. Use current Chrome or Edge.');
   }
@@ -105,6 +127,14 @@ async function chooseDestination(context: PlayerContext, plan: DownloadPlan): Pr
       accept: { [plan.mimeType]: [`.${plan.extension}`] },
     }],
   });
+}
+
+const chooseDestination = __YDOWN_BROWSER_STORAGE_ONLY__
+  ? chooseBrowserStorageDestination
+  : chooseSavePickerDestination;
+
+export function usesBrowserStorageDestination(): boolean {
+  return __YDOWN_BROWSER_STORAGE_ONLY__;
 }
 
 async function downloadAudioOnly(

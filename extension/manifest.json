@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "YouTube Local Browser Downloader",
-  "version": "0.5.2",
+  "version": "0.5.3",
   "description": "Downloads YouTube adaptive streams and muxes them locally inside the browser.",
   "minimum_chrome_version": "120",
   "permissions": [
