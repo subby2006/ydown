@@ -89,6 +89,7 @@ experimental artifact.
 - live streams, rentals, primetime, youtube movies, shorts (in shorts view), and anything without the native 
   Download button are not supported.
 - sometimes ydown might not work if you leave the video tab open for too long. if such a problem occurs simply reload the page, play the video briefly and retry
+- sometimes (vary rarely) the player might get stuck on an endless reload loop, again refresh the page to fix it
 
 ## special thanks
 
