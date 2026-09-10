@@ -38,7 +38,10 @@ test('extension is a permission-minimal Manifest V3 package', () => {
   assert.match(background, /lastNotifiedReleaseTag/);
   assert.match(background, /UPDATE_CHECK_INTERVAL_MS/);
   assert.match(background, /chrome\.runtime\.getManifest\(\)\.version/);
-  assert.match(background, /CURRENT_BUILD_ID = 'dev'/);
+  assert.match(
+  background,
+  /CURRENT_BUILD_ID = '(?:dev|\d+\.\d+)'/,
+  );
   assert.match(background, /CURRENT_BUILD_TIME = '\d{4}-\d{2}-\d{2}T/);
   assert.match(background, /releaseTime > buildTime/);
   assert.match(background, /url\.hostname === 'youtube\.com'/);

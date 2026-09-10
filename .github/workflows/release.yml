@@ -37,10 +37,12 @@ jobs:
         run: |
           test -n "$SENTRY_DSN"
 
-      - name: Check and test
+      # This intentionally runs only builds and local Node tests. The opt-in
+      # test:runtime script opens YouTube and must never run on Actions.
+      - name: Check and test (offline)
         run: |
           npm run check
-          npm test
+          npm run test:ci
 
       - name: Package extension
         shell: bash
